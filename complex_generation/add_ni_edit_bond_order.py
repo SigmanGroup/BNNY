@@ -2,17 +2,17 @@ from rdkit import Chem
 import os
 
 SMARTS_WITH_NI = "[Ni]"
-SMARTS_NO_NI   = "[#7]~c~C=[N]"   
+SMARTS_NO_NI   = "[#7]~c~C=[N]"
 
 def enforce_or_add_ni(mol):
-    rw = Chem.RWMol(mol)  
+    rw = Chem.RWMol(mol)
     conf = rw.GetConformer() if rw.GetNumConformers() > 0 else None
 
     pattern_with_ni = Chem.MolFromSmarts(SMARTS_WITH_NI)
     pattern_no_ni   = Chem.MolFromSmarts(SMARTS_NO_NI)
 
     matches = rw.GetSubstructMatches(pattern_with_ni) #fixes bond orders if Ni present
-    if matches:  
+    if matches:
         for match in matches:
             N1, C1, C2, N2, NI = match
 
@@ -29,7 +29,7 @@ def enforce_or_add_ni(mol):
     else:
         matches = rw.GetSubstructMatches(pattern_no_ni)
         if not matches:
-            return mol 
+            return mol
 
         for match in matches:
             N1, C1, C2, N2 = match
@@ -63,7 +63,7 @@ def fix_pyridines (sdf_name, mol,smarts):
         matches = mol.GetSubstructMatches(pattern)
         if len(matches) == 0:
             pattern = Chem.MolFromSmarts(smarts[2])
-            matches = mol.GetSubstructMatches(pattern)            
+            matches = mol.GetSubstructMatches(pattern)
             if len(matches) == 0:
                 print (f"some other pyridine issue {sdf_name}")
     for match in matches:
