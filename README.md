@@ -1,13 +1,29 @@
 # BNNY
 
-This should contain information about the repo including environment installation and usage.
+This repo contains scripts with examples for:
+    1. adding a new ligand to the library
+    2. filtering ligands to see if they meet criteria described in publication
+    3. property collection
+    4. reproducing models described in the paper
 
-## Major edits
+## Additional Information
 
-1. Add README.md
-2. Clear entrypoint to scripts (what do I run to get the models? what about parameterization)
-3. In the add_ni_edit_bond_order.py, there are multiple main guards (if __name__ == "__main__") when there should be one
-4. complex_generation/ has no data to run the script on
-5. Remove duplicate code between new_ligand_filtering.ipynb and conformer_generation.ipynb
-6. Add environment file. I could not run the code with my modeling env (will require edits later)
-7. I can't run NN_get_props_hydride.ipynb because of no data and broken paths
+### Adding New Ligands to the Library
+
+Adding a ligand begins with a smiles string of the ligand only(here shown as a df of smiles strings). The smiles strings can be converted to an SDF and constrained with a metal using the notebook 'conformer_generation.ipynb'
+
+Conformer searches are performed using the macrmodel scripts in the directory 'complex_and_free_lig_generation'. 
+
+
+### Filtering Ligands
+
+To evaluate if a ligand meets original library criteria the filtering found in 'ligand_filtering' can be applied.
+
+### Property Collection
+
+Properties can be collected utilizing the scripts found in 'property_collection'. Sample log files are included as an example.
+
+### Modeling
+
+The non-linear models described in the paper can be reproduced and found using the scripts in the 'modeling' folder
+
