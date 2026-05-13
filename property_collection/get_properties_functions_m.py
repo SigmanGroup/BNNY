@@ -2013,3 +2013,586 @@ def get_vbur_quadrants_only(dataframe, a1, ex1, ex2, z1, z2, radius): #uses morf
             vbur_quadoct_dataframe = vbur_quadoct_dataframe.append(row_i, ignore_index=True)
     print("Buried volume quadrants and octants function has completed")
     return(pd.concat([dataframe, vbur_quadoct_dataframe], axis = 1))
+
+import os 
+import openbabel 
+from openbabel import pybel
+
+def get_sdf_from_log(directory=os.getcwd()):
+    for filename in os.listdir(directory):
+        if filename.endswith(".log"):
+            log_path = os.path.join(directory, filename)
+            base_name = os.path.splitext(filename)[0]
+            sdf_path = os.path.join(directory, f"{base_name}.sdf")
+            for mol in pybel.readfile("log", log_path):
+                mol.write("sdf", sdf_path, overwrite=True)
+
+
+### Step 2: Get list of .log files and write to log_ids.txt
+def get_log_ids(directory=os.getcwd()):
+    with open("log_ids.txt", "w") as a:
+        for filename in os.listdir(os.getcwd()):
+            if filename.endswith('.log'):
+                f = os.path.join(filename)
+                a.write(str(f) + os.linesep)
+
+from rdkit import Chem 
+### Step 3: Determine ligand core type (5- or 6-membered ring)
+def get_ligand_core_type(sdf_directory=os.getcwd()):
+    mols_5 = {}
+    mols_6 = {}
+    results = []
+    with open('log_ids.txt', 'r') as file:
+        log_names = [line.strip() for line in file]
+
+    for log in log_names:
+        base_name = log.split('.')[0]
+        sdf_name = base_name + '.sdf'
+        sdf_path = os.path.join(sdf_directory, sdf_name)
+        suppl = Chem.SDMolSupplier(sdf_path, removeHs=False)
+        original_mol = next((m for m in suppl if m is not None), None)
+        if original_mol is None:
+            print(f"sdf error for {sdf_name}, cannot automatically get atom numbering")
+            continue
+
+        Ni_atom = [atom for atom in original_mol.GetAtoms() if atom.GetAtomicNum() == 28]
+        Ni_atom_idx = Ni_atom[0].GetIdx()
+        Ni_ringsize_5 = original_mol.GetAtomWithIdx(Ni_atom_idx).IsInRingSize(5)
+        Ni_ringsize_6 = original_mol.GetAtomWithIdx(Ni_atom_idx).IsInRingSize(6)
+
+        if Ni_ringsize_5 and not Ni_ringsize_6:
+            mols_5[base_name] = original_mol
+            results.append({'id': base_name, 'ligand_type': 'core_5'})
+        elif not Ni_ringsize_5 and Ni_ringsize_6:
+            mols_6[base_name] = original_mol
+            results.append({'id': base_name, 'ligand_type': 'core_6'})
+
+    return mols_5, mols_6, pd.DataFrame(results)
+
+### Step 4: Get initial atom numbering based on substructure matching
+def get_initial_atom_numbers(mol_dict5, mol_dict6, sdf_directory=os.getcwd()):
+    substructure_5 = ['[H][Ni]1([H])[N]C=C[N]1', '[H][Ni]1([H])[N]CC[N]1', '[H][Ni]1([H])[#7]~[#6]~[#6]~[#7]1' ]
+    
+    results5 = []
+    results6 = []
+    for key, value in mol_dict5.items():
+        ligID = key
+        mol = value
+
+        for substructure in substructure_5:
+            substructure_match = mol.GetSubstructMatches(Chem.MolFromSmarts(substructure))
+            if len(substructure_match) > 0:
+                atoms_idx_in_substructure_rdkit = list([item for sublist in substructure_match for item in sublist])
+                atoms_idx_in_substructure_gauss = [x+1 for x in atoms_idx_in_substructure_rdkit] #this line changes from 0-indexed to 1-indexed (for Gaussian)
+                results5.append({'log_name': ligID, 'ligand_type': 'core_5', 'H1': atoms_idx_in_substructure_gauss[0], 'Ni': atoms_idx_in_substructure_gauss[1], 'H2': atoms_idx_in_substructure_gauss[2], 'N1': atoms_idx_in_substructure_gauss[3], 'C1': atoms_idx_in_substructure_gauss[4], 'C2': atoms_idx_in_substructure_gauss[5], 'N2': atoms_idx_in_substructure_gauss[6]})
+                break
+        if ligID not in [entry['log_name'] for entry in results5]:
+            sdf_name = key + '.sdf'
+            print (sdf_name)
+            sdf_path = os.path.join(sdf_directory, sdf_name)
+            suppl = Chem.SDMolSupplier(sdf_path, removeHs=False)
+            mol = next((m for m in suppl if m is not None), None) #rdkit is weird sometimes just generating the mol again fixes the issue
+            for substructure in substructure_5:
+                print (substructure)
+                substructure_match = mol.GetSubstructMatches(Chem.MolFromSmarts(substructure))
+                print (substructure_match)
+                if len(substructure_match) > 0:
+                    atoms_idx_in_substructure_rdkit = list([item for sublist in substructure_match for item in sublist])
+                    atoms_idx_in_substructure_gauss = [x+1 for x in atoms_idx_in_substructure_rdkit] #this line changes from 0-indexed to 1-indexed (for Gaussian)
+                    results5.append({'log_name': ligID, 'ligand_type': 'core_5', 'H1': atoms_idx_in_substructure_gauss[0], 'Ni': atoms_idx_in_substructure_gauss[1], 'H2': atoms_idx_in_substructure_gauss[2], 'N1': atoms_idx_in_substructure_gauss[3], 'C1': atoms_idx_in_substructure_gauss[4],'C3': atoms_idx_in_substructure_gauss[5], 'C2': atoms_idx_in_substructure_gauss[6], 'N2': atoms_idx_in_substructure_gauss[7]})
+                    break
+
+    substructure_6 = ['[H][Ni]1([H])[N]CCC[N]1', '[H][Ni]1([H])[N]CC=C[N]1', '[H][Ni]1([H])[#7]~[#6]~[#6]~[#6]~[#7]1']
+    for key, value in mol_dict6.items():
+        ligID = key
+        mol = value
+
+        for substructure in substructure_6:
+            substructure_match = mol.GetSubstructMatches(Chem.MolFromSmarts(substructure))
+            if len(substructure_match) > 0:
+                atoms_idx_in_substructure_rdkit = list([item for sublist in substructure_match for item in sublist])
+                atoms_idx_in_substructure_gauss = [x+1 for x in atoms_idx_in_substructure_rdkit] #this line changes from 0-indexed to 1-indexed (for Gaussian)
+                results6.append({'log_name': ligID, 'ligand_type': 'core_6', 'H1': atoms_idx_in_substructure_gauss[0], 'Ni': atoms_idx_in_substructure_gauss[1], 'H2': atoms_idx_in_substructure_gauss[2], 'N1': atoms_idx_in_substructure_gauss[3], 'C1': atoms_idx_in_substructure_gauss[4],'C3': atoms_idx_in_substructure_gauss[5], 'C2': atoms_idx_in_substructure_gauss[6], 'N2': atoms_idx_in_substructure_gauss[7]})
+                break
+        if ligID not in [entry['log_name'] for entry in results6]:
+            sdf_name = key + '.sdf'
+            print (sdf_name)
+            sdf_path = os.path.join(sdf_directory, sdf_name)
+            suppl = Chem.SDMolSupplier(sdf_path, removeHs=False)
+            mol = next((m for m in suppl if m is not None), None) #rdkit is weird sometimes just generating the mol again fixes the issue
+            for substructure in substructure_6:
+                print (substructure)
+                substructure_match = mol.GetSubstructMatches(Chem.MolFromSmarts(substructure))
+                print (substructure_match)
+                if len(substructure_match) > 0:
+                    atoms_idx_in_substructure_rdkit = list([item for sublist in substructure_match for item in sublist])
+                    atoms_idx_in_substructure_gauss = [x+1 for x in atoms_idx_in_substructure_rdkit] #this line changes from 0-indexed to 1-indexed (for Gaussian)
+                    results6.append({'log_name': ligID, 'ligand_type': 'core_6', 'H1': atoms_idx_in_substructure_gauss[0], 'Ni': atoms_idx_in_substructure_gauss[1], 'H2': atoms_idx_in_substructure_gauss[2], 'N1': atoms_idx_in_substructure_gauss[3], 'C1': atoms_idx_in_substructure_gauss[4],'C3': atoms_idx_in_substructure_gauss[5], 'C2': atoms_idx_in_substructure_gauss[6], 'N2': atoms_idx_in_substructure_gauss[7]})
+                    break
+    if len(results6) > 0 and len(results5) > 0:
+        results6 = (pd.DataFrame(results6)).drop(columns=['C3'])
+        results5 = pd.DataFrame(results5)
+        results = pd.DataFrame(pd.concat([results5, results6], ignore_index=True))
+    elif len(results6) > 0 and len(results5) == 0:
+        results = pd.DataFrame(results6).drop(columns=['C3'])
+    elif len(results6) == 0 and len(results5) > 0:
+        results = pd.DataFrame(results5)
+
+    return pd.DataFrame(results)
+
+### Step 5: Make atom numbering consistent across ensemble of conformers for each ligand
+def make_ensemble_atom_numbering_consistent (df):
+    df['lig_name'] = df['log_name'].str.split('_').str[0]
+    ligands = df.groupby('lig_name')
+    for prefix, ligand in ligands:
+        unique_rows = ligand.drop(columns=['log_name', 'lig_name']).drop_duplicates()
+        if len(unique_rows) > 1:
+            if (len(unique_rows) == 2 and #if there are only 2 unique sets of values
+                unique_rows.iloc[0]['Ni'] == unique_rows.iloc[1]['Ni'] and #and the Ni values are the same
+                ((unique_rows.iloc[0]['N1'] == unique_rows.iloc[1]['N2']) and
+                    (unique_rows.iloc[0]['N2'] == unique_rows.iloc[1]['N1']))): # and the N1/N2 values are just swapped
+                chosen_values = unique_rows.iloc[0]
+                for col in unique_rows.columns:
+                    df.loc[df['lig_name'] == prefix, col] = chosen_values[col]
+                continue
+            if len(unique_rows) > 2: #this indicates that there is a more complex issue and potentially different substructures
+                print(f"\nFlagged Prefix: {prefix}")
+                print("Detected differing sets of values:")
+
+                for i, unique_row in enumerate(unique_rows.iterrows(), start=1):
+                    print(f"Option {i}:")
+                    print(unique_row[1].to_dict())
+
+                print(f"{len(unique_rows) + 1}: Leave as is")
+
+                choice = int(input(f"\nEnter the option number (1-{len(unique_rows) + 1}) you want to apply for prefix '{prefix}': ").strip())
+
+                if choice <= len(unique_rows):
+                    chosen_values = unique_rows.iloc[choice - 1]
+                    for col in unique_rows.columns:
+                        df.loc[df['lig_name'] == prefix, col] = chosen_values[col]
+                else:
+                    print(f"Leaving the rows for prefix '{prefix}' as they are.")
+    df.sort_values(by=['lig_name'], inplace=True)
+    df = df.drop(columns=['lig_name'])
+    return df
+
+
+
+### Step 7: Verify atom numbering by checking atomic numbers match atom labels 
+def verify_atom_numbering(df, sdf_dir = os.getcwd()):
+    df_columns = list(df.columns)
+    for i,row in df.iterrows():
+        log_name_base = row['log_name']
+        sdf_name = log_name_base + '.sdf'
+        sdf_path = os.path.join(sdf_dir,sdf_name)
+        try:
+            suppl = Chem.SDMolSupplier(sdf_path, removeHs=False)
+            mol = next((m for m in suppl if m is not None), None)
+        except:
+            print (f'error reading sdf for {log_name_base}')
+            continue
+
+        N1_index = row['N1'] - 1 
+        N1_atomic_num = mol.GetAtomWithIdx(N1_index).GetAtomicNum()
+
+        N2_index = row['N2'] - 1
+        N2_atomic_num = mol.GetAtomWithIdx(N2_index).GetAtomicNum()
+
+        C1_index = row['C1'] - 1
+        C1_atomic_num = mol.GetAtomWithIdx(C1_index).GetAtomicNum()
+        
+        C2_index = row['C2'] - 1
+        C2_atomic_num = mol.GetAtomWithIdx(C2_index).GetAtomicNum()
+
+        if C2_atomic_num != 6 or C1_atomic_num != 6 or N2_atomic_num !=7 or N1_atomic_num !=7:
+            print (f'error in atom numbering for {log_name_base}')
+
+        if 'F1' in df_columns and 'F2' in df_columns:
+            F1_index = row['F1'] - 1
+            F2_index = row['F2'] - 1
+
+            F1_atomic_num = mol.GetAtomWithIdx(F1_index).GetAtomicNum()
+            F2_atomic_num = mol.GetAtomWithIdx(F2_index).GetAtomicNum()
+
+            if F1_atomic_num !=9 or F2_atomic_num !=9:
+                print (f'error in atom numbering for {log_name_base}')
+        if 'H1' in df_columns and 'H2' in df_columns:
+            H1_index = row['H1'] - 1
+            H2_index = row['H2'] - 1
+
+            H1_atomic_num = mol.GetAtomWithIdx(H1_index).GetAtomicNum()
+            H2_atomic_num = mol.GetAtomWithIdx(H2_index).GetAtomicNum()
+
+            if H1_atomic_num !=1 or H2_atomic_num !=1:
+                print (f'error in atom numbering for {log_name_base}')
+
+
+def find_pyox_ligands_and_renumber(df, sdf_dir=os.getcwd()):
+    # first deal with the 5-membered cores
+    df5 = df[df['ligand_type'] == 'core_5'].copy()
+    pyox_ligands = []
+    other_ligands = []
+    for i,row in df5.iterrows():
+        log_name_base = row['log_name']
+        N1_index = row['N1'] - 1 #subtract 1 because mol is 0 indexed and gaussian is 1-indexed
+        N2_index = row['N2'] - 1
+        C1_index = row['C1'] - 1
+        C2_index = row['C2'] - 1
+        
+        sdf_name = log_name_base + '.sdf'
+        sdf_path = os.path.join(sdf_dir,sdf_name)
+
+        try:
+            suppl = Chem.SDMolSupplier(sdf_path, removeHs=False)
+            mol = next((m for m in suppl if m is not None), None)
+        except:
+            print (f'bad input file for {sdf_path}')
+        ringsize_N1_is_6 = mol.GetAtomWithIdx(N1_index).IsInRingSize(6)
+        ringsize_N1_is_5 = mol.GetAtomWithIdx(N1_index).IsInRingSize(5)
+
+        ringsize_N2_is_6 = mol.GetAtomWithIdx(N2_index).IsInRingSize(6)
+        ringsize_N2_is_5 = mol.GetAtomWithIdx(N2_index).IsInRingSize(5)
+
+        if ringsize_N1_is_6 is False and ringsize_N2_is_6 is False and ringsize_N2_is_5 is True and ringsize_N1_is_5 is True: 
+            # if there are no 6 membered rings and core is 5 membered, it is biim/biox
+            other_ligands.append(log_name_base)
+        elif ringsize_N1_is_6 is True and ringsize_N2_is_6 is True and ringsize_N2_is_5 is True and ringsize_N1_is_5 is True: 
+            # if N1 and N2 are each in a 6 membered ring and also a 5 membered core, it is a bpy or phen
+            other_ligands.append(log_name_base)
+        else:
+            # should be a pyox ligand
+            pyox_ligands.append(log_name_base)
+
+    if len(other_ligands) > 0:
+        other_lig_df = df5.loc[df5['log_name'].isin(other_ligands)].copy()
+        other_lig_df.loc[:, 'ligand_class'] = 'other'
+    if len(pyox_ligands) > 0:
+        pyox_lig_df = df5.loc[df5['log_name'].isin(pyox_ligands)].copy()
+        pyox_lig_df.loc[:, 'ligand_class'] = 'pyox'
+        for i,row in pyox_lig_df.iterrows():
+                log_name_base = row['log_name']
+                N1_index = row['N1'] - 1 #subtract 1 because mol is 0 indexed and gaussian is 1-indexed
+                N2_index = row['N2'] - 1
+                C1_index = row['C1'] - 1                
+                C2_index = row['C2'] - 1
+
+                sdf_name = log_name_base + '.sdf'
+                sdf_path = os.path.join(sdf_dir,sdf_name)
+
+                try:
+                    suppl = Chem.SDMolSupplier(sdf_path, removeHs=False)
+                    mol = next((m for m in suppl if m is not None), None)
+                except:
+                    print (f'bad input file for {sdf_path}')
+                
+                ringsize_N1_is_6 = mol.GetAtomWithIdx(N1_index).IsInRingSize(6)
+                ringsize_N1_is_5 = mol.GetAtomWithIdx(N1_index).IsInRingSize(5)
+
+                ringsize_N2_is_6 = mol.GetAtomWithIdx(N2_index).IsInRingSize(6)
+                ringsize_N2_is_5 = mol.GetAtomWithIdx(N2_index).IsInRingSize(5)
+                
+                if ringsize_N1_is_6 is True and ringsize_N2_is_5 is True and ringsize_N2_is_6 is False: # is N1 is already pyridine, df is correct as is 
+                    # write back corrected values (+1 because dataframe is 1-based)
+                    pyox_lig_df.loc[i, 'N1'], pyox_lig_df.loc[i, 'N2']  = N1_index + 1, N2_index + 1
+                    pyox_lig_df.loc[i, 'C1'], pyox_lig_df.loc[i, 'C2'] = C1_index + 1, C2_index + 1
+
+                elif ringsize_N2_is_6 is True and ringsize_N1_is_5 is True and ringsize_N1_is_6 is False:
+                    pyox_lig_df.loc[i, 'N1'], pyox_lig_df.loc[i, 'N2'] = N2_index + 1, N1_index + 1
+                    pyox_lig_df.loc[i, 'C1'], pyox_lig_df.loc[i, 'C2'] = C2_index + 1, C1_index + 1
+    
+    if len(other_ligands) > 0 and len(pyox_ligands) > 0:
+        df5_pyox_corrected = pd.concat([pyox_lig_df, other_lig_df], ignore_index=True)
+    elif len(other_ligands) == 0 and len(pyox_ligands) > 0:
+        df5_pyox_corrected = pyox_lig_df
+    elif len(other_ligands) > 0 and len(pyox_ligands) == 0:
+        df5_pyox_corrected = other_lig_df
+    if len(other_ligands) == 0 and len(pyox_ligands) == 0:
+        df5_pyox_corrected = pd.DataFrame()
+
+    # now deal with the 6-membered cores
+    df6 = df[df['ligand_type'] == 'core_6'].copy()
+    pyr6_ligands = []
+    box_ligands = []
+    for i,row in df6.iterrows():
+        log_name_base = row['log_name']
+        N1_index = row['N1'] - 1 
+        N2_index = row['N2'] - 1
+        C1_index = row['C1'] - 1
+        C2_index = row['C2'] - 1
+        
+        sdf_name = log_name_base + '.sdf'
+        sdf_path = os.path.join(sdf_dir,sdf_name)
+
+        try:
+            suppl = Chem.SDMolSupplier(sdf_path, removeHs=False)
+            mol = next((m for m in suppl if m is not None), None)
+        except:
+            print (f'bad input file for {sdf_path}')
+        ringsize_N1_is_6 = mol.GetAtomWithIdx(N1_index).IsInRingSize(6)
+        ringsize_N1_is_5 = mol.GetAtomWithIdx(N1_index).IsInRingSize(5)
+
+        ringsize_N2_is_6 = mol.GetAtomWithIdx(N2_index).IsInRingSize(6)
+        ringsize_N2_is_5 = mol.GetAtomWithIdx(N2_index).IsInRingSize(5)
+
+        if ringsize_N2_is_6 is True and ringsize_N2_is_5 is True and ringsize_N1_is_6 is True and ringsize_N1_is_5 is True:
+            # if N1 and N2 are each in a 5 membered ring and also a 6 membered core, it is a box ligand 
+            box_ligands.append(log_name_base)
+        else:
+            # should be a pyr6 ligand
+            pyr6_ligands.append(log_name_base)
+    if len(box_ligands) > 0:
+        box_lig_df = df6.loc[df6['log_name'].isin(box_ligands)].copy()
+        box_lig_df.loc[:, 'ligand_class'] = 'other'
+    if len(pyr6_ligands) > 0:
+        pyr6_lig_df = df6.loc[df6['log_name'].isin(pyr6_ligands)].copy()
+        pyr6_lig_df.loc[:, 'ligand_class'] = 'pyr6'
+        for i,row in pyr6_lig_df.iterrows():
+                log_name_base = row['log_name']
+                N1_index = row['N1'] - 1 #subtract 1 because mol is 0 indexed and gaussian is 1-indexed
+                N2_index = row['N2'] - 1
+                C1_index = row['C1'] - 1                
+                C2_index = row['C2'] - 1
+
+                sdf_name = log_name_base + '.sdf'
+                sdf_path = os.path.join(sdf_dir,sdf_name)
+
+                try:
+                    suppl = Chem.SDMolSupplier(sdf_path, removeHs=False)
+                    mol = next((m for m in suppl if m is not None), None)
+                except:
+                    print (f'bad input file for {sdf_path}')
+                
+                ringsize_N1_is_6 = mol.GetAtomWithIdx(N1_index).IsInRingSize(6)
+                ringsize_N1_is_5 = mol.GetAtomWithIdx(N1_index).IsInRingSize(5)
+
+                ringsize_N2_is_6 = mol.GetAtomWithIdx(N2_index).IsInRingSize(6)
+                ringsize_N2_is_5 = mol.GetAtomWithIdx(N2_index).IsInRingSize(5)
+                
+                if ringsize_N1_is_6 is True and ringsize_N1_is_5 is True and ringsize_N2_is_6 is True and ringsize_N2_is_5 is False: # is N1 is already pyridine, df is correct as is
+                    # then N1 is the oxazoline and N2 is the pyridine so we need to swap them 
+                    pyr6_lig_df.loc[i, 'N1'], pyr6_lig_df.loc[i, 'N2']  = N2_index + 1, N1_index + 1
+                    pyr6_lig_df.loc[i, 'C1'], pyr6_lig_df.loc[i, 'C2'] = C2_index + 1, C1_index + 1
+
+                elif ringsize_N1_is_6 is True and ringsize_N1_is_5 is False and ringsize_N2_is_6 is True and ringsize_N2_is_5 is True:
+                    # then N2 is the oxazoline and N1 is the pyridine, which is correct
+                    pyr6_lig_df.loc[i, 'N1'], pyr6_lig_df.loc[i, 'N2'] = N1_index + 1, N2_index + 1
+                    pyr6_lig_df.loc[i, 'C1'], pyr6_lig_df.loc[i, 'C2'] = C1_index + 1, C2_index + 1
+    if len(box_ligands) > 0 and len(pyr6_ligands) > 0:
+        df6_pyox_corrected = pd.concat([box_lig_df, pyr6_lig_df], ignore_index=True)
+    elif len(box_ligands) == 0 and len(pyr6_ligands) > 0:
+        df6_pyox_corrected = pyr6_lig_df
+    elif len(box_ligands) > 0 and len(pyr6_ligands) == 0:
+        df6_pyox_corrected = box_lig_df
+    if len(box_ligands) == 0 and len(pyr6_ligands) == 0:
+        df6_pyox_corrected = pd.DataFrame()
+    df_pyox_corrected = pd.concat([df5_pyox_corrected, df6_pyox_corrected], ignore_index=True)
+    return df_pyox_corrected
+
+
+def get_vbur_quadrants_only(dataframe, a1, ex1, ex2, z1, z2, radius):
+    """
+    Uses Morfeus to calculate %Vbur at a single radius for atom (a1) in df.
+    """
+    atom = str(a1)
+    atom_ex1 = str(ex1)
+    atom_ex2 = str(ex2)
+    atom_z1 = str(z1)
+    atom_z2 = str(z2)
+
+    rows = []  # Collect result rows here
+
+    for index, row in dataframe.iterrows():
+        try:
+            log_file = row['log_name']
+            atom1 = row[atom]      
+            exclude1 = row[atom_ex1]
+            exclude2 = row[atom_ex2]
+            zaxis1 = row[atom_z1]
+            zaxis2 = row[atom_z2]
+            xzatom = row[atom_z2]
+
+            streams, error = get_outstreams(log_file)
+            if error:
+                print(error)
+                row_i = {
+                    f'%Vbur_{atom}_quadrant_+,+': "no data",
+                    f'%Vbur_{atom}_quadrant_–,+': "no data",
+                    f'%Vbur_{atom}_quadrant_–,–': "no data",
+                    f'%Vbur_{atom}_quadrant_+,–': "no data",
+                }
+                rows.append(row_i)
+                continue
+
+            log_coordinates = get_geom(streams)
+            elements = np.array([entry[0] for entry in log_coordinates])
+            coordinates = np.array([entry[1:] for entry in log_coordinates], dtype=float)
+
+            vbur = BuriedVolume(
+                elements,
+                coordinates,
+                int(atom1),
+                radius=radius,
+                include_hs=True,
+                excluded_atoms=[exclude1, exclude2],
+                z_axis_atoms=[int(zaxis1), int(zaxis2)],
+                xz_plane_atoms=[int(xzatom)],
+            )
+
+            vbur.octant_analysis()
+            bv_quadrants = vbur.quadrants["percent_buried_volume"]
+
+            row_i = {
+                f'%Vbur_{atom}_quadrant_+,+': bv_quadrants[1],
+                f'%Vbur_{atom}_quadrant_–,+': bv_quadrants[2],
+                f'%Vbur_{atom}_quadrant_–,–': bv_quadrants[3],
+                f'%Vbur_{atom}_quadrant_+,–': bv_quadrants[4],
+            }
+
+        except Exception as e:
+            print(f"**** Unable to acquire Vbur quadrants for: {row.get('log_name', 'unknown')}.log")
+            row_i = {
+                f'%Vbur_{atom}_quadrant_+,+': "no data",
+                f'%Vbur_{atom}_quadrant_–,+': "no data",
+                f'%Vbur_{atom}_quadrant_–,–': "no data",
+                f'%Vbur_{atom}_quadrant_+,–': "no data",
+            }
+
+        rows.append(row_i)
+    vbur_quadoct_dataframe = pd.DataFrame(rows)
+    print("Buried volume quadrants and octants function has completed")
+    return pd.concat([dataframe.reset_index(drop=True), vbur_quadoct_dataframe], axis=1)
+
+
+
+def get_goodvibes_e(dataframe, temp):
+    rows = []  
+    options = gv.GVOptions()
+    options.spc = 'link'
+    options.temperature = temp
+    log = io.Logger("Goodvibes", 'output', False)
+
+    for index, row in dataframe.iterrows():
+        try:
+            log_file = row['log_name']
+            file_data = io.getoutData(str(log_file) + ".log", options)
+
+            options.freq_scale_factor = False
+            level_of_theory = [file_data.functional + '/' + file_data.basis_set]
+            options.freq_scale_factor, options.mm_freq_scale_factor = gv.get_vib_scale_factor(
+                level_of_theory, options, log
+            )
+
+            bbe_val = thermo.calc_bbe(file_data, options)
+            properties = [
+                'sp_energy', 'zpe', 'enthalpy', 'entropy', 
+                'qh_entropy', 'gibbs_free_energy', 'qh_gibbs_free_energy'
+            ]
+            vals = [getattr(bbe_val, k) for k in properties]
+
+            row_i = {
+                'E_spc (Hartree)': vals[0],
+                'ZPE(Hartree)': vals[1],
+                'H_spc(Hartree)': vals[2],
+                'T*S': vals[3] * options.temperature,
+                'T*qh_S': vals[4] * options.temperature,
+                'G(T)_spc(Hartree)': vals[5],
+                'qh_G(T)_spc(Hartree)': vals[6],
+                'T': options.temperature
+            }
+
+        except Exception as e:
+            print(f"\n**** Unable to acquire GoodVibes energies for: {row.get('log_name', 'unknown')}.log")
+            row_i = {
+                'E_spc (Hartree)': "no data",
+                'ZPE(Hartree)': "no data",
+                'H_spc(Hartree)': "no data",
+                'T*S': "no data",
+                'T*qh_S': "no data",
+                'G(T)_spc(Hartree)': "no data",
+                'qh_G(T)_spc(Hartree)': "no data",
+                'T': "no data"
+            }
+
+        rows.append(row_i)
+    e_dataframe = pd.DataFrame(rows)
+    return pd.concat([dataframe.reset_index(drop=True), e_dataframe], axis=1)
+
+### Step 9: For the non-pyridine containing ligands, label the N1/N2 according to a property value
+def renumber_non_pyox_ligands(df, prefix='Lig', suffix='_'):
+    other_ligands_df = df[df['ligand_class'] == 'other'].copy()
+    other_ligands_list = other_ligands_df['log_name'].tolist()
+    if other_ligands_list:
+        pyox_df = df[~df['log_name'].isin(other_ligands_list)].copy()
+    else:
+        pyox_df = pd.DataFrame()
+    columns = list(other_ligands_df.columns)
+    if 'F1' in columns and 'F2' in columns:
+        other_ligands_df = get_goodvibes_e(other_ligands_df, 298.15)
+        other_ligands_df = get_vbur_quadrants_only(other_ligands_df, a1="Ni", ex1="F1", ex2="F2", z1="N1", z2="N2", radius=6.5)
+        pass
+    if 'H1' in columns and 'H2' in columns:
+        other_ligands_df = get_goodvibes_e(other_ligands_df, 298.15)
+        other_ligands_df = get_vbur_quadrants_only(other_ligands_df, a1="Ni", ex1="H1", ex2="H2", z1="N1", z2="N2", radius=6.5)
+        pass
+    
+    other_ligands_df['north_hemisphere'] = other_ligands_df['%Vbur_Ni_quadrant_+,+'] + other_ligands_df['%Vbur_Ni_quadrant_+,–']
+    other_ligands_df['south_hemisphere'] = other_ligands_df['%Vbur_Ni_quadrant_–,–'] + other_ligands_df['%Vbur_Ni_quadrant_–,+']
+
+    prefix = prefix
+    suffix = suffix
+
+    energy_col_header = "G(T)_spc(Hartree)"
+    compound_list = []
+
+    for index, row in other_ligands_df.iterrows():
+        log_file = row['log_name']
+        prefix_and_compound = log_file.split(str(suffix))
+        compound = prefix_and_compound[0].split(str(prefix))
+        compound_list.append(compound[1])
+
+    compound_list = list(set(compound_list)) 
+    compound_list.sort() 
+
+    # if north hemisphere is bigger than N2 is correctly assigned and is south hemisphere is bigger it needs to swap (i.e. north hemisphere is N2 and south hemisphere is N1)
+    property_to_compare = ["north_hemisphere", "south_hemisphere"] 
+    dict_of_N2 = {}
+    dict_of_N1 = {}
+    dict_of_C2 = {}
+    dict_of_C1 = {}
+
+    for compound in compound_list: 
+        substring = str(prefix) + str(compound) + str(suffix)
+        compounddf = other_ligands_df[other_ligands_df["log_name"].str.startswith(substring)]
+        compounddf = compounddf.reset_index(drop = True)  
+        compounddf["∆G(Hartree)"] = compounddf[energy_col_header] - compounddf[energy_col_header].min()
+        low_e_index = compounddf[compounddf["∆G(Hartree)"] == 0].index.tolist()
+        prop_1 = compounddf[str(property_to_compare[0])][low_e_index[0]] #first property listed above, should be N2 (north)
+        prop_2 = compounddf[str(property_to_compare[1])][low_e_index[0]] #second property listed above, should be N1
+        if prop_1 >= prop_2: # if the N2 property is greater than the N1 property, N2 should stay as N2 and N1 should stay as N1 - and then C2 and C1 stay as is 
+            N2 = compounddf["N2"][low_e_index[0]] #N2 is bigger
+            C2 = compounddf["C2"][low_e_index[0]] #C2 has to move with N2
+            N1 = compounddf["N1"][low_e_index[0]] #N1 is smaller
+            C1 = compounddf["C1"][low_e_index[0]] #C1 has to move with N1
+        elif prop_1 < prop_2: # if N1 is larger than N2, reassign N1 as N2 and C1 as C2 
+            N2 = compounddf["N1"][low_e_index[0]]
+            C2 = compounddf["C1"][low_e_index[0]]
+            N1 = compounddf["N2"][low_e_index[0]]
+            C1 = compounddf["C2"][low_e_index[0]]
+
+        for index, row in compounddf.iterrows():
+            key = row['log_name']
+            dict_of_N2[key] = N2
+            dict_of_N1[key] = N1
+            dict_of_C2[key] = C2
+            dict_of_C1[key] = C1
+            
+
+    other_ligands_df['N2'] = other_ligands_df['log_name'].map(dict_of_N2)
+    other_ligands_df['N1'] = other_ligands_df['log_name'].map(dict_of_N1)
+    other_ligands_df['C2'] = other_ligands_df['log_name'].map(dict_of_C2)
+    other_ligands_df['C1'] = other_ligands_df['log_name'].map(dict_of_C1)
+    other_ligands_df = other_ligands_df[columns]
+    full_readjusted_df = pd.concat([pyox_df, other_ligands_df], ignore_index=True)
+    full_readjusted_df.drop(columns=['ligand_class', 'ligand_type'], inplace=True)
+    return full_readjusted_df
