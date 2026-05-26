@@ -23,7 +23,6 @@ import goodvibes.pes as pes
 from goodvibes.GoodVibes import ATMOS, GAS_CONSTANT
 from goodvibes.io import level_of_theory
 from goodvibes.thermo import calc_bbe
-from goodvibes.vib_scale_factors import scaling_data_dict, scaling_data_dict_mod
 
 from pathlib import Path
 import itertools
@@ -335,8 +334,8 @@ def get_vbur_one_radius(dataframe, a1, radius): #uses morfeus to calculate vbur 
         try:
             log_file = row['log_name']
             atom1 = row[str(a1)] #gets numerical value (e.g. 16) for a1 (e.g. metal_atom, N1 etc)
-            exclude1 = row["-H1"] # numerical value for column we always want to exclude
-            exclude2 = row["-H2"] #numerical value for column we always want to exclude
+            exclude1 = row["H1"] # numerical value for column we always want to exclude
+            exclude2 = row["H2"] #numerical value for column we always want to exclude
             streams, error = get_outstreams(log_file) #need to add file path if you're running from a different directory than file
             if error != "":
                 print(error)
@@ -1151,171 +1150,78 @@ def get_SASA(dataframe): #uses morfeus to calculate solvent accessible surface a
     print("SASA function has completed")
     return(pd.concat([dataframe, sasa_dataframe], axis = 1))
 
-def _get_goodvibes_freq_scale_factor(file: Path):
-    '''
-    Replicate the GoodVibes 3.2 automatic vibrational scale-factor lookup.
+import goodvibes
+import inspect
+from goodvibes import compute_thermo
+from pathlib import Path
+import pandas as pd
 
-    Parameters
-    ----------
-    filename: str
-        Output file to inspect.
+def _get_goodvibes_thermo_data(logfile, temp=298.15, spc='link'):
 
-    Returns
-    -------
-    freq_scale_factor: float
-        Vibrational scale factor used by GoodVibes.
-    '''
-    configure_logger(debug=False)
+    logfile = Path(logfile)
+    original_name = logfile.stem
 
-    # Detect the level of theory the same way GoodVibes does.
-    level = level_of_theory(file=file).upper()
+    result = compute_thermo(
+        str(logfile),
+        temperature=temp,
+        QS="grimme",
+        solv="none"
+    )
 
-    # Search the built-in GoodVibes scale-factor tables.
-    for data in (scaling_data_dict, scaling_data_dict_mod):
-        if level in data:
-
-            # This must be returned as type float because
-            # It was specified as float32 (f4) in goodvibes
-            return float(data[level].zpe_fac)
-
-    # Match the GoodVibes fallback when no match is found.
-    return 1.0
-
-
-def _get_goodvibes_thermo_data(logfile: Path | str,
-                               temp: float = 298.15,
-                               spc: str = 'link'):
-    '''
-    Helper function that mimics the old GoodVibes workflow and returns
-    thermochemical data as a dict.
-
-    Parameters
-    ----------
-    logfile: str
-        Gaussian/ORCA output file path. A bare stem is also accepted.
-
-    temp: float
-        Temperature in Kelvin.
-
-    spc: str
-        Single-point correction mode. Use 'link' to match the old code.
-
-    Returns
-    -------
-    thermo_data: dict
-        Thermochemical data extracted from the GoodVibes calc_bbe object.
-    '''
-    try:
-        # Match the GoodVibes gas-phase default concentration when -c is not supplied.
-        conc = ATMOS / (GAS_CONSTANT * temp)
-
-        # Match GoodVibes automatic vibrational scale-factor detection.
-        freq_scale_factor = _get_goodvibes_freq_scale_factor(logfile)
-
-        # Call the real GoodVibes 3.2 thermochemistry engine directly.
-        bbe = calc_bbe(
-            file=logfile,
-            QS='grimme',
-            QH=False,
-            s_freq_cutoff=100.0,
-            H_FREQ_CUTOFF=100.0,
-            temperature=temp,
-            conc=conc,
-            freq_scale_factor=freq_scale_factor,
-            solv='none',
-            spc=spc,
-            invert=False,
-            d3_term=0.0,
-            cosmo=None,
-            ssymm=False,
-            mm_freq_scale_factor=False,
-            inertia='global',
-            g4=False,
-        )
-
-        # Return the same values the old version
-        thermo_data =  pd.Series({
-            'log_name': logfile.name,
-            'E_spc (Hartree)': bbe.sp_energy,
-            'ZPE(Hartree)': bbe.zpe,
-            'H_spc(Hartree)': bbe.enthalpy,
-            'T*S': bbe.entropy * temp,
-            'T*qh_S': bbe.qh_entropy * temp,
-            'G(T)_spc(Hartree)': bbe.gibbs_free_energy,
-            'qh_G(T)_spc(Hartree)': bbe.qh_gibbs_free_energy,
-            'T': temp
-        })
-
-    except Exception as e:
-        thermo_data =  pd.Series({
-            'log_name': logfile.name,
-            'E_spc (Hartree)': None,
-            'ZPE(Hartree)': None,
-            'H_spc(Hartree)': None,
-            'T*S': None,
-            'T*qh_S': None,
-            'G(T)_spc(Hartree)': None,
-            'qh_G(T)_spc(Hartree)': None,
-            'T': temp
-        })
-
-    return pd.DataFrame(thermo_data).transpose()
+    return pd.DataFrame([{
+        "log_name": original_name,
+        "E_spc (Hartree)": result.sp_energy,
+        "ZPE(Hartree)": result.zpe,
+        "H_spc(Hartree)": result.enthalpy,
+        "T*S": result.entropy * temp,
+        "G(T)_spc(Hartree)": result.gibbs_free_energy,
+        "T": temp
+    }])
 
 
 def get_goodvibes_e(dataframe: pd.DataFrame,
                     data_dir: Path,
                     temp: float = 298.15,
-                    procs: int = 1):
-    '''
-    Extracts the following properties
+                    procs: int = 0):
 
-    - E_spc (Hartree)
-    - ZPE(Hartree)
-    - H_spc(Hartree)
-    - T*S
-    - T*qh_S
-    - G(T)_spc(Hartree)
-    - qh_G(T)_spc(Hartree)
-    - T
+    dataframe = dataframe.copy()
 
-    Parameters
-    ----------
-    dataframe: pd.DataFrame
-        DataFrame containing `'log_name'` column
+    files = []
 
-    data_dir: Path
-        Directory where the files are located
+    for x in dataframe['log_name']:
 
-    temp: float
-        Temperature in Kelvin
+        x = str(x)
 
-    procs: int
-        Number of processors
+        # ONLY append .log for file access
+        if not x.lower().endswith('.log'):
+            filename = x + '.log'
+        else:
+            filename = x
 
-    Returns
-    ----------
-    pd.DataFrame
-        The DataFrame containing the `'log_name'` column and
-        the resultant descriptors
-    '''
-    files = [Path(data_dir / x) for x in dataframe['log_name'].to_list()]
+        files.append(Path(data_dir) / filename)
 
-    args = zip(files,
-            itertools.repeat(temp),
-            itertools.repeat('link'))
+    args = [(f, temp, 'link') for f in files]
 
-    with multiprocessing.Pool(processes=procs) as p:
-        results = p.starmap(_get_goodvibes_thermo_data, args)
+    if procs and procs > 1:
+        with multiprocessing.Pool(processes=procs) as p:
+            results = p.starmap(_get_goodvibes_thermo_data, args)
+    else:
+        results = [
+            _get_goodvibes_thermo_data(*arg)
+            for arg in args
+        ]
 
-    results = pd.concat(results)
+    results = pd.concat(results, ignore_index=True)
 
-    results.set_index('log_name', inplace=True, drop=True)
-    dataframe.set_index('log_name', inplace=True, drop=True)
-
-    dataframe = pd.concat([dataframe, results], axis=1)
-    dataframe.reset_index(inplace=True)
+    # Merge instead of concat-by-index
+    dataframe = dataframe.merge(
+        results,
+        on='log_name',
+        how='left'
+    )
 
     print('GoodVibes function completed.')
+
     return dataframe
 
 
@@ -2079,68 +1985,6 @@ def get_vbur_quadrants_octants(dataframe, a1, ex1, ex2, z1, z2, radius): #uses m
     print("Buried volume quadrants and octants function has completed")
     return(pd.concat([dataframe, vbur_quadoct_dataframe], axis = 1))
 
-def get_vbur_quadrants_only(dataframe, a1, ex1, ex2, z1, z2, radius): #uses morfeus to calculate vbur at a single radius for an atom (a1) in df
-    atom = str(a1)
-    atom_ex1 = str(ex1)
-    atom_ex2 = str(ex2)
-    atom_z1 = str(z1)
-    atom_z2 = str(z2)
-
-    vbur_quadoct_dataframe = pd.DataFrame(columns=[])
-
-    for index, row in dataframe.iterrows():
-        try:
-            log_file = row['log_name']
-            atom1 = row[atom] #gets numerical value (e.g. 16) for a1 (e.g. C1)
-            exclude1 = row[atom_ex1]
-            exclude2 = row[atom_ex2]
-            zaxis1 = row[atom_z1]
-            zaxis2 = row[atom_z2]
-            xzatom = row[atom_z2]
-            streams, error = get_outstreams(log_file) #need to add file path if you're running from a different directory than file
-            if error != "":
-                print(error)
-
-                row_i = {'%Vbur_' + str(atom) + '_quadrant_+,+': "no data",
-                     '%Vbur_' + str(atom) + '_quadrant_–,+': "no data",
-                     '%Vbur_' + str(atom) + '_quadrant_–,–': "no data",
-                     '%Vbur_' + str(atom) + '_quadrant_+,–': "no data"
-                    }
-
-                vbur_dataframe = vbur_dataframe.append(row_i, ignore_index=True)
-                continue
-
-            log_coordinates = get_geom(streams)
-            elements = np.array([log_coordinates[i][0] for i in range(len(log_coordinates))])
-            coordinates = np.array([np.array(log_coordinates[i][1:]) for i in range(len(log_coordinates))])
-            vbur = BuriedVolume(elements, coordinates, int(atom1), radius=radius, include_hs=True, excluded_atoms=[exclude1, exclude2], z_axis_atoms=[int(zaxis1), int(zaxis2)], xz_plane_atoms=[int(xzatom)]) #calls morfeus
-
-            vbur.octant_analysis()
-
-            quadrants = vbur.quadrants
-            bv_quadrants = quadrants['percent_buried_volume']
-
-            row_i = {'%Vbur_' + str(atom) + '_quadrant_+,+': bv_quadrants[1],
-                     '%Vbur_' + str(atom) + '_quadrant_–,+': bv_quadrants[2],
-                     '%Vbur_' + str(atom) + '_quadrant_–,–': bv_quadrants[3],
-                     '%Vbur_' + str(atom) + '_quadrant_+,–': bv_quadrants[4]
-                    }
-
-            vbur_quadoct_dataframe = vbur_quadoct_dataframe.append(row_i, ignore_index=True)
-
-        except:
-            print('****Unable to acquire Vbur quadrant and octants for:', row['log_name'], ".log")
-
-            row_i = {'%Vbur_' + str(atom) + '_quadrant_+,+': "no data",
-                 '%Vbur_' + str(atom) + '_quadrant_–,+': "no data",
-                 '%Vbur_' + str(atom) + '_quadrant_–,–': "no data",
-                 '%Vbur_' + str(atom) + '_quadrant_+,–': "no data",
-                }
-
-            vbur_quadoct_dataframe = vbur_quadoct_dataframe.append(row_i, ignore_index=True)
-    print("Buried volume quadrants and octants function has completed")
-    return(pd.concat([dataframe, vbur_quadoct_dataframe], axis = 1))
-
 import os
 import openbabel
 from openbabel import pybel
@@ -2516,79 +2360,67 @@ def find_pyox_ligands_and_renumber(df, sdf_dir=os.getcwd()):
     df_pyox_corrected = pd.concat([df5_pyox_corrected, df6_pyox_corrected], ignore_index=True)
     return df_pyox_corrected
 
-
-def get_vbur_quadrants_only(dataframe, a1, ex1, ex2, z1, z2, radius):
-    """
-    Uses Morfeus to calculate %Vbur at a single radius for atom (a1) in df.
-    """
+def get_vbur_quadrants_only(dataframe, a1, ex1, ex2, z1, z2, radius): #uses morfeus to calculate vbur at a single radius for an atom (a1) in df
     atom = str(a1)
     atom_ex1 = str(ex1)
     atom_ex2 = str(ex2)
     atom_z1 = str(z1)
     atom_z2 = str(z2)
 
-    rows = []  # Collect result rows here
+    vbur_quadoct_dataframe = pd.DataFrame(columns=[])
 
     for index, row in dataframe.iterrows():
         try:
             log_file = row['log_name']
-            atom1 = row[atom]
+            atom1 = row[atom] #gets numerical value (e.g. 16) for a1 (e.g. C1)
             exclude1 = row[atom_ex1]
             exclude2 = row[atom_ex2]
             zaxis1 = row[atom_z1]
             zaxis2 = row[atom_z2]
             xzatom = row[atom_z2]
-
-            streams, error = get_outstreams(log_file)
-            if error:
+            streams, error = get_outstreams(log_file) #need to add file path if you're running from a different directory than file
+            if error != "":
                 print(error)
-                row_i = {
-                    f'%Vbur_{atom}_quadrant_+,+': "no data",
-                    f'%Vbur_{atom}_quadrant_–,+': "no data",
-                    f'%Vbur_{atom}_quadrant_–,–': "no data",
-                    f'%Vbur_{atom}_quadrant_+,–': "no data",
-                }
-                rows.append(row_i)
+
+                row_i = {'%Vbur_' + str(atom) + '_quadrant_+,+': "no data",
+                     '%Vbur_' + str(atom) + '_quadrant_–,+': "no data",
+                     '%Vbur_' + str(atom) + '_quadrant_–,–': "no data",
+                     '%Vbur_' + str(atom) + '_quadrant_+,–': "no data"
+                    }
+
+                vbur_dataframe = vbur_dataframe.append(row_i, ignore_index=True)
                 continue
 
             log_coordinates = get_geom(streams)
-            elements = np.array([entry[0] for entry in log_coordinates])
-            coordinates = np.array([entry[1:] for entry in log_coordinates], dtype=float)
-
-            vbur = BuriedVolume(
-                elements,
-                coordinates,
-                int(atom1),
-                radius=radius,
-                include_hs=True,
-                excluded_atoms=[exclude1, exclude2],
-                z_axis_atoms=[int(zaxis1), int(zaxis2)],
-                xz_plane_atoms=[int(xzatom)],
-            )
+            elements = np.array([log_coordinates[i][0] for i in range(len(log_coordinates))])
+            coordinates = np.array([np.array(log_coordinates[i][1:]) for i in range(len(log_coordinates))])
+            vbur = BuriedVolume(elements, coordinates, int(atom1), radius=radius, include_hs=True, excluded_atoms=[exclude1, exclude2], z_axis_atoms=[int(zaxis1), int(zaxis2)], xz_plane_atoms=[int(xzatom)]) #calls morfeus
 
             vbur.octant_analysis()
-            bv_quadrants = vbur.quadrants["percent_buried_volume"]
 
-            row_i = {
-                f'%Vbur_{atom}_quadrant_+,+': bv_quadrants[1],
-                f'%Vbur_{atom}_quadrant_–,+': bv_quadrants[2],
-                f'%Vbur_{atom}_quadrant_–,–': bv_quadrants[3],
-                f'%Vbur_{atom}_quadrant_+,–': bv_quadrants[4],
-            }
+            quadrants = vbur.quadrants
+            bv_quadrants = quadrants['percent_buried_volume']
 
-        except Exception as e:
-            print(f"**** Unable to acquire Vbur quadrants for: {row.get('log_name', 'unknown')}.log")
-            row_i = {
-                f'%Vbur_{atom}_quadrant_+,+': "no data",
-                f'%Vbur_{atom}_quadrant_–,+': "no data",
-                f'%Vbur_{atom}_quadrant_–,–': "no data",
-                f'%Vbur_{atom}_quadrant_+,–': "no data",
-            }
+            row_i = {'%Vbur_' + str(atom) + '_quadrant_+,+': bv_quadrants[1],
+                     '%Vbur_' + str(atom) + '_quadrant_–,+': bv_quadrants[2],
+                     '%Vbur_' + str(atom) + '_quadrant_–,–': bv_quadrants[3],
+                     '%Vbur_' + str(atom) + '_quadrant_+,–': bv_quadrants[4]
+                    }
 
-        rows.append(row_i)
-    vbur_quadoct_dataframe = pd.DataFrame(rows)
+            vbur_quadoct_dataframe = vbur_quadoct_dataframe.append(row_i, ignore_index=True)
+
+        except:
+            print('****Unable to acquire Vbur quadrant and octants for:', row['log_name'], ".log")
+
+            row_i = {'%Vbur_' + str(atom) + '_quadrant_+,+': "no data",
+                 '%Vbur_' + str(atom) + '_quadrant_–,+': "no data",
+                 '%Vbur_' + str(atom) + '_quadrant_–,–': "no data",
+                 '%Vbur_' + str(atom) + '_quadrant_+,–': "no data",
+                }
+
+            vbur_quadoct_dataframe = vbur_quadoct_dataframe.append(row_i, ignore_index=True)
     print("Buried volume quadrants and octants function has completed")
-    return pd.concat([dataframe.reset_index(drop=True), vbur_quadoct_dataframe], axis=1)
+    return(pd.concat([dataframe, vbur_quadoct_dataframe], axis = 1))
 
 
 ### Step 9: For the non-pyridine containing ligands, label the N1/N2 according to a property value
@@ -2611,7 +2443,7 @@ def renumber_non_pyox_ligands(df, prefix='Lig', suffix='_'):
 
     other_ligands_df['north_hemisphere'] = other_ligands_df['%Vbur_Ni_quadrant_+,+'] + other_ligands_df['%Vbur_Ni_quadrant_+,–']
     other_ligands_df['south_hemisphere'] = other_ligands_df['%Vbur_Ni_quadrant_–,–'] + other_ligands_df['%Vbur_Ni_quadrant_–,+']
-
+    display (other_ligands_df)
     prefix = prefix
     suffix = suffix
 
